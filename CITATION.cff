@@ -1,0 +1,34 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the paper below."
+title: "SNPgen: Phenotype-Supervised Genotype Representation and Synthetic Data Generation via Latent Diffusion"
+type: software
+authors:
+  - given-names: Andrea
+    family-names: Lampis
+    affiliation: "Politecnico di Milano; Human Technopole"
+  - given-names: Michela Carlotta
+    family-names: Massi
+    affiliation: "Human Technopole"
+  - given-names: Matteo
+    family-names: Matteucci
+    affiliation: "Politecnico di Milano"
+  - given-names: Emanuele
+    family-names: Di Angelantonio
+    affiliation: "Human Technopole; University of Cambridge"
+license: MIT
+repository-code: "https://github.com/ht-diva/SNPgen"
+preferred-citation:
+  type: article
+  title: "SNPgen: Phenotype-Supervised Genotype Representation and Synthetic Data Generation via Latent Diffusion"
+  authors:
+    - given-names: Andrea
+      family-names: Lampis
+    - given-names: Michela Carlotta
+      family-names: Massi
+    - given-names: Matteo
+      family-names: Matteucci
+    - given-names: Emanuele
+      family-names: Di Angelantonio
+  # journal: "Bioinformatics"
+  # year: 2026
+  # doi: "10.1093/bioinformatics/PLACEHOLDER"  # Update after publication

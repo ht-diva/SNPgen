@@ -1,0 +1,37 @@
+disc_start_iter: 20001
+
+model:
+  params:
+    autoencoder_config:
+      model_size: small
+      target: snpgen.models.modules.vae.Autoencoder
+      params:
+        encoder_config:
+          target: snpgen.models.modules.vae.encoders.Encoder
+          params: &encoder_defaults
+            input_ch: 3
+            in_ch_proj_dim: 32
+            conv1d_channels: [32, 32, 64, 64, 128, 128]
+            z_channels: 1
+            num_res_blocks: 2
+            mid_attn: True
+            attn_pos: []
+            multi_kernel: False
+            dropout: 0.0
+            resamp_with_conv: True
+            kernel_size: 3
+
+        decoder_config:
+          target: snpgen.models.modules.vae.decoders.Decoder
+          params:
+            <<: *encoder_defaults # copy encoder config
+            conv1d_channels: ${...encoder_config.params.conv1d_channels}
+            z_channels: ${...encoder_config.params.z_channels}
+            out_ch: 3
+            z_dim: ${eval:'${seq_len} // (2**(len(${...encoder_config.params.conv1d_channels})-1))'}
+
+    optimizer_config:
+      autoencoder:
+        target: torch.optim.Adam
+        params:
+          lr: 4.5e-6

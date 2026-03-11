@@ -1,0 +1,1 @@
+from snpgen.training.loggers.wandb import setup_wandb_logger
