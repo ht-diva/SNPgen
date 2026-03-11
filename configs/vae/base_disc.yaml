@@ -1,0 +1,28 @@
+disc_start_iter_effective: ${oc.select:disc_start_iter, 20001} # do not touch
+
+model:
+  target: snpgen.training.engine.vae.AutoencoderDiscriminatorTrainingWrapper
+  params:
+    disc_start_iter: ${disc_start_iter_effective}
+
+    loss_config:
+      target: snpgen.models.modules.vae.losses.GeneralLossWithDiscriminator
+      params:
+        disc_start: ${disc_start_iter_effective}
+        disc_factor: 1.0
+        disc_weight: 0.5
+        disc_loss: hinge
+
+        discriminator_config:
+          target: snpgen.models.modules.vae.discriminators.WDiscriminator
+          params:
+            input_ch: ${oc.select:model.params.autoencoder_config.params.decoder_config.params.out_ch, ${oc.select:model.params.autoencoder_config.params.decoder_config.params.out_channels, 3}} # use decoder out_ch / out_channels if available, otherwise default to 3
+            c_hidden: 128
+            depth: 6
+            kernel_size: ${oc.select:model.params.autoencoder_config.params.encoder_config.params.kernel_size, 3} # use encoder kernel_size if available, otherwise default to 3
+
+    optimizer_config:
+      discriminator:
+        target: torch.optim.Adam
+        params:
+          lr: 4.5e-6

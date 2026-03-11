@@ -1,0 +1,8 @@
+model:
+  params:
+    autoencoder_config:
+      model_size: small
+      params:
+        encoder_config:
+          params: 
+            conv1d_channels: [32, 64, 64, 128]

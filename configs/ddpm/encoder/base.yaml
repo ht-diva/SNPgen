@@ -1,0 +1,8 @@
+vae_ckpt_path: /path/to/your/vae/checkpoint.ckpt
+
+model:
+  params:
+    first_stage_config:
+      params:
+        ckpt_path: ${vae_ckpt_path}
+        load_ema_ckpt: True

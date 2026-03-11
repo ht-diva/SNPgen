@@ -1,0 +1,117 @@
+# BASE CONFIGURATION FOR DDPM
+
+# Note:
+# To use 'y' labels as conditioning we have 3 options:
+#  1) use y-embedding in cross-attention -> set num_classes=None, context_dim=embedding_dim, and add_sequence_dim=True in ClassEmbedder
+#  2) use y-embedding as "offset" in the time embedding -> set num_classes='sequential', context_dim=None, adm_in_channels=embedding_dim, and add_sequence_dim=False in ClassEmbedder
+#  3) to use 1 + 2 -> set num_classes='sequential', context_dim=embedding_dim, adm_in_channels=embedding_dim, and create 2 instances of ClassEmbedder, one with add_sequence_dim=True and one with add_sequence_dim=False
+
+# common parameters
+seed: 42
+seq_len: 2048
+vae_ckpt_path: /path/to/your/vae/ckpt
+y_embedding_size: 128
+n_classes: 2  # for discrete traits; ignored for continuous traits
+
+model:
+  target: snpgen.training.engine.ddpm.DiffusionEngine
+  params:
+    learning_rate: 1.0e-4
+    scale_factor: 1.0
+    use_lr_scheduler: True
+    lr_scheduler_warmup_epochs: 5
+    disable_first_stage_autocast: True
+    input_key: x
+    compile_model: False
+
+    use_ema: True
+    ema_config:
+      decay: 0.9999
+      use_warmup: False
+      exclude_buffers: True
+      verbose: False
+
+    denoiser_config:
+      target: snpgen.models.modules.ddpm.denoiser.DiscreteDenoiser
+      params:
+        num_idx: 1000
+
+        scaling_config:
+          target: snpgen.models.modules.ddpm.denoiser_scaling.EpsScaling
+        discretizer_config:
+          target: snpgen.models.modules.ddpm.discretizer.LegacyDDPMDiscretization
+
+    network_config:
+      target: snpgen.models.modules.ddpm.unet.UNetModel
+      params:
+        in_channels: ${...first_stage_config.params.encoder_config.params.z_channels}
+        out_channels: ${...first_stage_config.params.encoder_config.params.z_channels}
+        model_channels: 64
+        num_res_blocks: 2
+        attention_resolutions: [1, 2, 4]
+        channel_mult: [1, 2, 4]
+        conv_resample: True
+        dims: 1
+        num_classes: null # TODO
+        use_checkpoint: True
+        num_heads: -1
+        num_head_channels: 32
+        resblock_updown: False
+        transformer_depth: 1
+        context_dim: ${y_embedding_size} # TODO
+        use_linear_in_transformer: True
+        spatial_transformer_backend: xformers
+        adm_in_channels: null # TODO
+
+    conditioner_config:
+      target: snpgen.models.modules.embedding.embedders.GeneralConditioner
+      params:
+        emb_models:
+          - is_trainable: True
+            input_key: 'y'
+            ucg_rate: 0.2
+            target: snpgen.models.modules.embedding.embedders.ClassEmbedder
+            params:
+              add_sequence_dim: True
+              embed_dim: ${y_embedding_size}
+              n_classes: ${n_classes}
+
+    loss_fn_config:
+      target: snpgen.models.modules.ddpm.losses.StandardDiffusionLoss
+      params:
+        loss_type: l2
+
+        loss_weighting_config:
+          target: snpgen.models.modules.ddpm.loss_weighting.EpsWeighting
+
+        sigma_sampler_config:
+          target: snpgen.models.modules.ddpm.sigma_sampling.DiscreteSampling
+          params:
+            num_idx: 1000
+
+            discretizer_config:
+              target: snpgen.models.modules.ddpm.discretizer.LegacyDDPMDiscretization
+
+    sampler_config:
+      target: snpgen.models.modules.ddpm.sampler.EulerEDMSampler
+      params:
+        num_steps: 50
+
+        discretizer_config:
+          target: snpgen.models.modules.ddpm.discretizer.LegacyDDPMDiscretization
+
+        guider_config:
+          target: snpgen.models.modules.ddpm.guiders.VanillaCFG
+          params:
+            scale: 5.0
+
+data:
+  batch_size: 1024
+  val_batch_size: 256
+
+  dataset:
+    params:
+      as_dict: True
+
+training:
+  mixed_precision: True

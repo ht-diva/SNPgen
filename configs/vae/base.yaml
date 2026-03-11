@@ -1,0 +1,46 @@
+# BASE CONFIGURATION FOR VAE
+
+# common parameters
+seed: 42
+seq_len: 2048
+
+model:
+  target: snpgen.training.engine.vae.AutoencoderTrainingWrapper
+  params:
+
+    use_ema: True
+    ema_config:
+      decay: 0.9999
+      use_warmup: False
+      exclude_buffers: True
+      verbose: False
+
+    loss_config:
+      target: snpgen.models.modules.vae.losses.GeneralLoss
+      params:
+        logvar_init: 0.0
+        learn_logvar: True
+        kl_weight: 1.0
+
+data:
+  batch_size: 256
+  val_batch_size: 256
+
+  raw_dataset:
+    target: snpgen.data.loader.SplitDataset
+    params:
+      val_ratio: 0.2
+      test_ratio: 0.1
+      onehot: True
+      data_dtype: np.float32
+      channel_first: True
+      metadata: False
+      seed: ${seed}
+
+  dataset:
+    target: snpgen.data.loader.SNPDataset
+    params:
+      seq_len: ${seq_len}
+
+training:
+  mixed_precision: True

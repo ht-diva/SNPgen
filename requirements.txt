@@ -1,0 +1,40 @@
+# SNPgen - Python dependencies
+# Tested with Python 3.11, PyTorch 2.6, CUDA 12.4
+
+# ── Core framework ──────────────────────────────────────────
+torch>=2.0.0
+lightning>=2.5.0
+omegaconf>=2.3.0
+einops>=0.7.0
+tqdm
+
+# ── Data ────────────────────────────────────────────────────
+h5py>=3.10.0
+numpy>=1.24.0
+numba>=0.57.0
+pandas>=2.0.0
+scipy>=1.10.0
+
+# ── Training & metrics ─────────────────────────────────────
+torchmetrics>=1.0.0
+torchinfo>=1.8.0
+wandb                       # experiment logging
+
+# ── Evaluation — downstream ML classifiers ──────────────────
+xgboost>=2.0.0
+catboost>=1.2.0
+scikit-learn>=1.3.0
+joblib>=1.3.0
+glum>=3.0.0                 # PRS univariate (penalized GLM)
+
+# ── Visualization ──────────────────────────────────────────
+matplotlib>=3.7.0
+seaborn>=0.13.0
+
+# ── Data preparation (BED to HDF5 conversion) ──────────────
+bed-reader>=1.0.0           # PLINK BED file reader
+scikit-allel>=1.3.0         # genotype handling utilities
+
+# ── Optional (faster attention backends) ────────────────────
+# flash-attn>=2.0.0         # pip install flash-attn --no-build-isolation
+# xformers>=0.0.20          # pip install xformers
