@@ -4,7 +4,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/downloads/)
 [![PyTorch 2.0+](https://img.shields.io/badge/pytorch-2.0+-ee4c2c.svg)](https://pytorch.org/)
 
-**Phenotype-supervised genotype representation and synthetic data generation via latent diffusion.**
+**Official implementation of the paper ["SNPgen: Phenotype-Supervised Genotype Representation and Synthetic Data Generation via Latent Diffusion"](https://arxiv.org/abs/2603.10873) (arXiv 2026).**
 
 SNPgen is a two-stage generative framework for creating realistic synthetic SNP genotype data conditioned on phenotypic traits. It combines a Variational Autoencoder (VAE) for compressed genotype representation with a latent Denoising Diffusion Probabilistic Model (DDPM) for phenotype-conditioned synthetic data generation.
 
@@ -189,9 +189,14 @@ SNPgen/
 If you use SNPgen in your research, please cite:
 
 ```bibtex
-@article{lampis2026snpgen,
-  title     = {SNPgen: Phenotype-Supervised Genotype Representation and Synthetic Data Generation via Latent Diffusion},
-  author    = {Lampis, Andrea and Massi, Michela Carlotta and Matteucci, Matteo and Di Angelantonio, Emanuele},
+@misc{lampis2026snpgenphenotypesupervisedgenotyperepresentation,
+      title={SNPgen: Phenotype-Supervised Genotype Representation and Synthetic Data Generation via Latent Diffusion}, 
+      author={Andrea Lampis and Michela Carlotta Massi and Nicola Pirastu and Francesca Ieva and Matteo Matteucci and Emanuele Di Angelantonio},
+      year={2026},
+      eprint={2603.10873},
+      archivePrefix={arXiv},
+      primaryClass={cs.LG},
+      url={https://arxiv.org/abs/2603.10873}, 
 }
 ```
 
