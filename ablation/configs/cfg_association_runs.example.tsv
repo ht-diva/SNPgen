@@ -1,0 +1,2 @@
+trait	reference_config	output_dir	cfg1	cfg2	cfg3	cfg5
+example	/path/to/ddpm/config.yaml	/path/to/output/cfg_association	/path/to/cfg1/syn_complete_dataset.hdf5	/path/to/cfg2/syn_complete_dataset.hdf5	/path/to/cfg3/syn_complete_dataset.hdf5	/path/to/cfg5/syn_complete_dataset.hdf5

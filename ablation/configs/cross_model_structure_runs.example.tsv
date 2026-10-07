@@ -1,0 +1,2 @@
+trait	reference_config	output_dir	cvae	crbm	wgan_gp	ddpm_cfg1	ddpm_cfg2	ddpm_cfg3	ddpm_cfg5
+example	/path/to/reference/config.yaml	/path/to/output/structure	/path/to/cvae/syn_complete_dataset.hdf5	/path/to/crbm/syn_complete_dataset.hdf5	/path/to/wgan/syn_complete_dataset.hdf5	/path/to/ddpm/cfg1/syn_complete_dataset.hdf5	/path/to/ddpm/cfg2/syn_complete_dataset.hdf5	/path/to/ddpm/cfg3/syn_complete_dataset.hdf5	/path/to/ddpm/cfg5/syn_complete_dataset.hdf5

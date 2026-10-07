@@ -1,0 +1,10 @@
+# Portable trait registry example. Replace dataset_path and seq_len with values
+# for your cohort. Existing-checkpoint workflows may additionally set
+# saved_vae_config and/or saved_ddpm_config; training from scratch needs neither.
+
+traits:
+  example:
+    dataset_path: /path/to/your_genotype_dataset.hdf5
+    seq_len: 2048
+    # saved_vae_config: /path/to/an/existing_vae_run/config.yaml
+    # saved_ddpm_config: /path/to/an/existing_ddpm_run/config.yaml

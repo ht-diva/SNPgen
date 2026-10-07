@@ -1,0 +1,139 @@
+# Standalone conditional VAE baseline config for quick tests.
+#
+# This standalone config trains from a dataset without a pretrained checkpoint.
+# Set dataset_path, seq_len, and model dimensions for the chosen SNP panel.
+
+seed: 42
+seq_len: 2048
+n_classes: 2
+disc_start_iter: 20001
+disc_start_iter_effective: ${oc.select:disc_start_iter, 20001}
+dataset_path: /path/to/your_genotype_dataset.hdf5
+
+model:
+  target: ablation.models.conditional_vae.ConditionalAutoencoderDiscriminatorTrainingWrapper
+  params:
+    use_ema: true
+    ema_config:
+      decay: 0.9999
+      use_warmup: false
+      exclude_buffers: true
+      verbose: false
+    loss_config:
+      target: snpgen.models.modules.vae.losses.GeneralLossWithDiscriminator
+      params:
+        logvar_init: 0.0
+        learn_logvar: true
+        kl_weight: 1.0
+        disc_start: ${disc_start_iter_effective}
+        disc_factor: 1.0
+        disc_weight: 0.5
+        disc_loss: hinge
+        discriminator_config:
+          target: snpgen.models.modules.vae.discriminators.WDiscriminator
+          params:
+            input_ch: ${oc.select:model.params.autoencoder_config.params.decoder_config.params.out_ch,3}
+            c_hidden: 128
+            depth: 6
+            kernel_size: ${oc.select:model.params.autoencoder_config.params.encoder_config.params.kernel_size,3}
+    autoencoder_config:
+      model_size: small
+      target: ablation.models.conditional_vae.ConditionalAutoencoder
+      params:
+        n_classes: ${n_classes}
+        input_ch: ${model.params.autoencoder_config.params.encoder_config.params.input_ch}
+        z_channels: ${model.params.autoencoder_config.params.encoder_config.params.z_channels}
+        z_dim: ${model.params.autoencoder_config.params.decoder_config.params.z_dim}
+        condition_encoder: true
+        condition_decoder: true
+        encoder_config:
+          target: snpgen.models.modules.vae.encoders.Encoder
+          params:
+            input_ch: 3
+            in_ch_proj_dim: 32
+            conv1d_channels: [32, 64, 64, 128, 128]
+            z_channels: 1
+            num_res_blocks: 2
+            mid_attn: true
+            attn_pos: []
+            multi_kernel: false
+            dropout: 0.0
+            resamp_with_conv: true
+            kernel_size: 3
+        decoder_config:
+          target: snpgen.models.modules.vae.decoders.Decoder
+          params:
+            input_ch: 3
+            in_ch_proj_dim: 32
+            conv1d_channels: ${...encoder_config.params.conv1d_channels}
+            z_channels: ${...encoder_config.params.z_channels}
+            num_res_blocks: 2
+            mid_attn: true
+            attn_pos: []
+            multi_kernel: false
+            dropout: 0.0
+            resamp_with_conv: true
+            kernel_size: 3
+            out_ch: 3
+            z_dim: ${eval:'${seq_len} // (2**(len(${...encoder_config.params.conv1d_channels})-1))'}
+    optimizer_config:
+      autoencoder:
+        target: torch.optim.Adam
+        params:
+          lr: 4.5e-6
+      discriminator:
+        target: torch.optim.Adam
+        params:
+          lr: 4.5e-6
+    disc_start_iter: ${disc_start_iter_effective}
+    convert_to_onehot: true
+    channel_first: true
+
+data:
+  batch_size: 256
+  val_batch_size: 256
+  num_workers: 4
+  raw_dataset:
+    target: snpgen.data.loader.SplitDataset
+    params:
+      file_path: ${dataset_path}
+      val_ratio: 0.2
+      test_ratio: 0.1
+      onehot: true
+      data_dtype: np.float32
+      channel_first: true
+      metadata: false
+      seed: ${seed}
+  dataset:
+    target: snpgen.data.loader.SNPDataset
+    params:
+      seq_len: ${seq_len}
+      as_dict: true
+
+training:
+  max_epochs: 400
+  mixed_precision: true
+  monitor: val/metrics/recons/accuracy
+  monitor_mode: max
+  checkpoint_periodic_filename: "epoch={epoch}-step={step}"
+  checkpoint_best_filename: "best-epoch={epoch}-step={step}-val_recon_acc={val_recon_acc:.4f}"
+  checkpoint_metric_filename_key: val_recon_acc
+  every_n_epochs: 50
+  use_wandb: false
+  wandb_project: SNPgen
+  wandb_group: Ablation
+  enable_progress_bar: true
+  log_every_n_steps: 1
+  scale_lr: true
+  save_last: true
+
+experiment:
+  run_prefix: vae
+  ablation_name: conditional_vae
+  proj_name: trait
+  model_size: small
+  encoder_type: encoder
+  emb_size: 128
+  extra_name: small_white
+  use_discriminator: true
+  base_scratch_dir: ./runs

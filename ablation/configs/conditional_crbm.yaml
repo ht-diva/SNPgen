@@ -1,0 +1,79 @@
+# Conditional port of the Yelmen et al. out-of-equilibrium RBM/CRBM cascade.
+#
+# Stage 0 samples the first half of the panel from a label-pinned RBM. Stage 1
+# pins the label plus the generated first half and samples the second half.
+# Diploid dosages use the original deterministic cumulative/thermometer
+# encoding: 0 -> 00, 1 -> 10, 2 -> 11. This preserves the successful legacy
+# behavior while keeping optional random pseudo-phasing available by override.
+
+seed: 42
+seq_len: 2048
+n_classes: 2
+dataset_path: /path/to/your_genotype_dataset.hdf5
+
+model:
+  target: ablation.models.crbm.ConditionalCRBMModule
+  params:
+    seq_len: ${seq_len}
+    n_classes: ${n_classes}
+    num_hidden: 1000
+    lr: 0.001
+    gibbs_steps: 50
+    generation_gibbs_steps: 50
+    reg_l2: 0.0
+    var_init: 1.0e-4
+    reset_perm_chain_batch: true
+    upd_centered: true
+    condition_on_label: true
+    genotype_encoding: legacy_dosage_bits
+    # Defaults to the current minibatch size, preserving the legacy nNeg=nMB
+    # behavior. Set explicitly to 1252 for a Yelmen-hyperparameter experiment.
+    # num_pcd:
+    # Defaults to seq_len // 2, matching a one-step short-panel version of
+    # Yelmen's overlapping-window cascade.
+    # first_segment_len:
+
+data:
+  batch_size: 512
+  val_batch_size: 512
+  num_workers: 4
+  raw_dataset:
+    target: snpgen.data.loader.SplitDataset
+    params:
+      file_path: ${dataset_path}
+      val_ratio: 0.2
+      test_ratio: 0.1
+      onehot: true
+      data_dtype: np.float32
+      channel_first: true
+      metadata: false
+      seed: ${seed}
+  dataset:
+    target: snpgen.data.loader.SNPDataset
+    params:
+      seq_len: ${seq_len}
+      as_dict: true
+
+training:
+  max_epochs: 2000
+  mixed_precision: false
+  monitor: val/loss
+  monitor_mode: min
+  checkpoint_periodic_filename: "epoch={epoch}-step={step}"
+  checkpoint_best_filename: "best-epoch={epoch}-step={step}-val_loss={val_loss:.4f}"
+  every_n_epochs: 100
+  use_wandb: false
+  wandb_project: SNPgen
+  wandb_group: Ablation
+  enable_progress_bar: true
+  log_every_n_steps: 1
+  scale_lr: false
+  save_last: true
+
+experiment:
+  run_prefix: ablation_crbm
+  ablation_name: conditional_crbm
+  proj_name: dataset
+  base_scratch_dir: ./runs
+  inherit_vae_model_metadata: false
+  use_discriminator: false
