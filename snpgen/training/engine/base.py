@@ -76,7 +76,7 @@ class BaseEngine(pl.LightningModule):
             # Add the callback responsible for updating the EMA weights at the end of each training batch.
             self._ema_callback = EMACallbackV3(
                     ema_scope=self._ema_scope,
-                    validate_with_ema_weights=False,
+                    validate_with_ema_weights=bool(getattr(self, "validate_with_ema_weights", False)),
                     use_ema_weights=False
                 )
             callbacks.append(self._ema_callback)
