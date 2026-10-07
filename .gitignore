@@ -15,7 +15,6 @@ tmp/
 ablation_BACKUP/
 ablation/configs/*.tsv
 !ablation/configs/*.example.tsv
-ablation/configs/ddpm_runs.example.tsv
 ablation/configs/reselection_runs.example.tsv
 ablation/configs/traits.local.yaml
 ablation/archive_test_selected_outputs.py
@@ -26,9 +25,6 @@ ablation/slurm/submit_ablation_reselection.sh
 ablation/slurm/resolve_checkpoint_dir.py
 ablation/slurm/submit_privacy_reaudit.sh
 ablation/slurm/privacy_reaudit.sbatch
-# DDPM CLI migration will be published separately with the root Python scripts.
-ablation/slurm/generate_ddpm.sbatch
-ablation/slurm/submit_ddpm_evaluation.sh
 
 ############
 

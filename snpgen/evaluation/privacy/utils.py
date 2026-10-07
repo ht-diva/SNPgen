@@ -166,7 +166,7 @@ def load_privacy_data_from_checkpoint(
     """Load privacy evaluation data from a DDPM checkpoint directory.
 
     Reads config.yaml to find the dataset path and VAE checkpoint.
-    Loads real data (split into train_val and holdout), synthetic data,
+    Loads real training, validation and test splits, synthetic data,
     and optionally reconstructed data from the VAE checkpoint.
 
     Args:
@@ -195,7 +195,9 @@ def load_privacy_data_from_checkpoint(
 
     config = OmegaConf.load(config_path)
     h5_path = config.get('dataset_path', config.get('data', {}).get('dataset_path'))
-    seed = config.get('seed', 42)
+    # Membership partitions use the saved training split rather than the DDPM RNG seed.
+    raw_params = config.data.raw_dataset.get('params', {})
+    seed = int(config.get('dataset_split_seed', raw_params.get('seed', config.get('seed', 42))))
 
     if h5_path is None:
         raise ValueError("Could not find 'dataset_path' in config.yaml")

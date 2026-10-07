@@ -1,0 +1,2 @@
+trait	checkpoint_path	config_path
+example	/path/to/your/ddpm_run/best-epoch=99-step=10000-val_loss=0.2000.ckpt	/path/to/your/ddpm_run/config.yaml
