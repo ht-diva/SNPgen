@@ -31,6 +31,53 @@ def get_proper_state_dict_ddpm(load_path, ema=True):
     return get_proper_state_dict(load_path, keyword)
 
 
+def load_ddpm_model(model_config, load_path, device="cpu", ema=True):
+    """Instantiate and fully restore a DDPM training wrapper for inference.
+
+    The EMA checkpoint contains only the tracked denoiser. Trainable modules
+    outside that denoiser, notably the phenotype conditioner, must therefore be
+    restored from the complete Lightning state dict before EMA weights are
+    copied into ``model.model``.
+
+    Args:
+        model_config: Configuration passed to ``instantiate_from_config``.
+        load_path: Lightning DDPM checkpoint path.
+        device: Device on which to place the restored wrapper.
+        ema: Use EMA denoiser weights when True, otherwise online weights.
+
+    Returns:
+        The restored model in evaluation mode.
+    """
+    # Keep this import local: model construction imports this module from a
+    # number of lower-level network components.
+    from snpgen.utils import instantiate_from_config
+
+    model = instantiate_from_config(model_config)
+    checkpoint = torch.load(load_path, map_location="cpu", weights_only=False)
+    state_dict = checkpoint.get("state_dict", checkpoint)
+
+    incompatible = model.load_state_dict(state_dict, strict=False)
+    disallowed_missing = [
+        key for key in incompatible.missing_keys
+        if not key.startswith("model_ema.")
+    ]
+    unexpected = list(incompatible.unexpected_keys)
+    if disallowed_missing or unexpected:
+        raise RuntimeError(
+            "DDPM checkpoint/model mismatch: "
+            f"missing={list(incompatible.missing_keys)}, unexpected={unexpected}"
+        )
+
+    denoiser_state = get_proper_state_dict_ddpm(load_path, ema=ema)
+    if not denoiser_state:
+        weight_name = "EMA" if ema else "online"
+        raise RuntimeError(f"No DDPM {weight_name} denoiser weights found in {load_path}")
+    model.model.load_state_dict(denoiser_state, strict=True)
+    model.to(device)
+    model.eval()
+    return model
+
+
 def get_num_groups(num_channels: int, num_groups=32) -> int:
     """
     Calculate the number of groups for a given number of channels.

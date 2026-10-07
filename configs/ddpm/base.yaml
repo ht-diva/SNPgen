@@ -23,6 +23,8 @@ model:
     disable_first_stage_autocast: True
     input_key: x
     compile_model: False
+    validation_seed: 1729  # fixed validation latent/noise draws across epochs
+    validate_with_ema_weights: True  # match the weights used for generation
 
     use_ema: True
     ema_config:
@@ -115,3 +117,9 @@ data:
 
 training:
   mixed_precision: True
+  monitor: val/loss
+  monitor_mode: min
+  checkpoint_periodic_filename: "epoch={epoch}-step={step}"
+  checkpoint_best_filename: "best-epoch={epoch}-step={step}-val_loss={val_loss:.4f}"
+  every_n_epochs: 50  # set to null to disable periodic checkpointing
+  save_last: True

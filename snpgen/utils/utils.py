@@ -238,7 +238,10 @@ def get_proper_state_dict(load_path, keyword):
             k = k.replace(keyword, '', 1)
         return k, v
     
-    _state_dict = torch.load(load_path, weights_only=False)['state_dict']  
+    # Always deserialize on CPU first. Callers subsequently move the selected
+    # module to its inference device, and CPU mapping keeps checkpoint helpers
+    # usable on login/CPU nodes as well as GPU nodes.
+    _state_dict = torch.load(load_path, map_location="cpu", weights_only=False)['state_dict']
     state_dict = dict(map(convert_fn, filter(filter_fn, _state_dict.items())))
     return state_dict
 

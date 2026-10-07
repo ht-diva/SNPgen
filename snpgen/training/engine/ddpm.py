@@ -37,12 +37,15 @@ class DiffusionEngine(BaseEngine):
         input_key: str = "x",
         compile_model: bool = False,
         en_and_decode_n_samples_a_time: Optional[int] = None,
+        validation_seed: int = 1729,
+        validate_with_ema_weights: bool = True,
     ):
         super().__init__(use_ema=use_ema)
         self.save_hyperparameters(ignore=self.ignored_hparams)
 
         self.input_key = input_key
         self.learning_rate = learning_rate
+        self.validate_with_ema_weights = bool(validate_with_ema_weights)
         
         model = instantiate_from_config(network_config)
         self.model = OpenAIWrapper(model, compile_model=compile_model)
@@ -139,6 +142,31 @@ class DiffusionEngine(BaseEngine):
             loss_dict, prog_bar=True, logger=True, on_step=True, on_epoch=False
         )
 
+        return loss
+
+    def validation_step(self, batch, batch_idx):
+        # VAE posterior sampling, diffusion timesteps, and diffusion noise are
+        # stochastic. Common random numbers make each validation batch directly
+        # comparable across epochs without changing the training RNG stream.
+        cuda_devices = [] if self.device.type != "cuda" else [self.device.index or torch.cuda.current_device()]
+        with torch.random.fork_rng(devices=cuda_devices):
+            seed = int(self.hparams.validation_seed) + int(self.global_rank) * 1_000_000 + int(batch_idx)
+            # torch.manual_seed also seeds every visible CUDA device. fork_rng
+            # only snapshots the local device above, so seed the CPU generator
+            # directly and the current CUDA generator separately.
+            torch.random.default_generator.manual_seed(seed)
+            if self.device.type == "cuda":
+                torch.cuda.manual_seed(seed)
+            loss, _loss_dict = self.shared_step(batch)
+        self.log(
+            "val/loss",
+            loss.detach(),
+            prog_bar=True,
+            logger=True,
+            on_step=False,
+            on_epoch=True,
+            sync_dist=True,
+        )
         return loss
   
     def on_train_start(self, *args, **kwargs):
