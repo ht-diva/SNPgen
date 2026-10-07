@@ -1,17 +1,22 @@
 """
 Privacy metrics for evaluating synthetic SNP data.
 
-Implements 6 metrics:
+Implements the standard SNPgen privacy/fidelity metrics:
 1. Identical Match Rate (IMR) — exact copy detection
 2. Distance to Closest Record (DCR) — min distance distribution analysis
 3. NNAA (Nearest Neighbor Adversarial Accuracy) — adapted from GeneDiffusion
 4. Distance-based Membership Inference (MI) — re-identification risk
 5. NNDR (Nearest Neighbor Distance Ratio) — copying detection
 6. Allele Frequency Comparison (MAF Drift) — fidelity sanity check
+7. Case-control allele-frequency calibration — conditional fidelity
+
+The Yelmen-compatible AA_TS privacy loss and nearest-neighbour-chain analysis
+live in ``yelmen.py`` and are orchestrated here for synthetic cohorts.
 
 Plus PrivacyEvaluator class for orchestrating all metrics with incremental saving.
 """
 
+import os
 import warnings
 from dataclasses import dataclass, field
 from typing import Optional, Dict, List, Any
@@ -25,7 +30,14 @@ from .utils import (
     PrivacyDataBundle,
     save_privacy_results,
     load_privacy_results,
+    save_privacy_manifest,
+    load_privacy_manifest,
     subsample_by_label,
+)
+from .yelmen import (
+    matched_privacy_cohorts,
+    nearest_neighbor_chain_analysis,
+    yelmen_privacy_loss,
 )
 
 
@@ -145,14 +157,37 @@ class MAFResult:
     maf_syn: np.ndarray      # (N_snps,) per-SNP allele frequency in synthetic
     pearson_r: float
     pearson_pvalue: float
+    slope: float
+    intercept: float
     mean_abs_drift: float
     max_abs_drift: float
 
     def to_summary_dict(self):
         return {
             'pearson_r': float(self.pearson_r),
+            'slope': float(getattr(self, 'slope', np.nan)),
+            'intercept': float(getattr(self, 'intercept', np.nan)),
             'mean_abs_drift': float(self.mean_abs_drift),
             'max_abs_drift': float(self.max_abs_drift),
+        }
+
+
+@dataclass
+class CaseControlDeltaResult:
+    """Result of case-control allele-frequency shift comparison."""
+    real_delta: np.ndarray
+    syn_delta: np.ndarray
+    pearson_r: float
+    slope: float
+    mean_abs_delta_error: float
+    max_abs_delta_error: float
+
+    def to_summary_dict(self):
+        return {
+            'pearson_r': float(self.pearson_r),
+            'slope': float(self.slope),
+            'mean_abs_delta_error': float(self.mean_abs_delta_error),
+            'max_abs_delta_error': float(self.max_abs_delta_error),
         }
 
 
@@ -492,19 +527,89 @@ def allele_frequency_comparison(synthetic, real_train, verbose=True):
     drift = np.abs(maf_real - maf_syn)
 
     r, p = scipy_stats.pearsonr(maf_real, maf_syn)
+    if np.allclose(maf_real, maf_real[0]):
+        slope = np.nan
+        intercept = np.nan
+    else:
+        slope, intercept = np.polyfit(maf_real, maf_syn, deg=1)
 
     result = MAFResult(
         maf_real=maf_real,
         maf_syn=maf_syn,
         pearson_r=float(r),
         pearson_pvalue=float(p),
+        slope=float(slope),
+        intercept=float(intercept),
         mean_abs_drift=float(np.mean(drift)),
         max_abs_drift=float(np.max(drift)),
     )
 
     if verbose:
         print(f"  MAF: Pearson r={result.pearson_r:.6f}, "
+              f"slope={result.slope:.6f}, "
               f"mean_drift={result.mean_abs_drift:.6f}, max_drift={result.max_abs_drift:.6f}")
+
+    return result
+
+
+def case_control_delta_comparison(synthetic, labels_syn, real_train, labels_train, verbose=True):
+    """Compare per-SNP case-control allele-frequency shifts.
+
+    For each SNP, computes mean genotype/2 in cases minus controls for real and
+    synthetic data. The correlation captures whether phenotype signal is placed
+    on the same SNPs in the same direction; the through-origin slope captures
+    whether effect magnitudes are calibrated.
+    """
+    labels_syn = np.asarray(labels_syn).reshape(-1)
+    labels_train = np.asarray(labels_train).reshape(-1)
+
+    real_case = labels_train == 1
+    real_control = labels_train == 0
+    syn_case = labels_syn == 1
+    syn_control = labels_syn == 0
+
+    if not (real_case.any() and real_control.any() and syn_case.any() and syn_control.any()):
+        if verbose:
+            print("  Case-control delta: skipped (requires labels 0 and 1 in real and synthetic data)")
+        real_delta = np.full(real_train.shape[1], np.nan)
+        syn_delta = np.full(synthetic.shape[1], np.nan)
+        return CaseControlDeltaResult(
+            real_delta=real_delta,
+            syn_delta=syn_delta,
+            pearson_r=np.nan,
+            slope=np.nan,
+            mean_abs_delta_error=np.nan,
+            max_abs_delta_error=np.nan,
+        )
+
+    real_af = real_train.astype(np.float64) / 2.0
+    syn_af = synthetic.astype(np.float64) / 2.0
+
+    real_delta = real_af[real_case].mean(axis=0) - real_af[real_control].mean(axis=0)
+    syn_delta = syn_af[syn_case].mean(axis=0) - syn_af[syn_control].mean(axis=0)
+    delta_error = np.abs(syn_delta - real_delta)
+
+    if np.allclose(real_delta, real_delta[0]) or np.allclose(syn_delta, syn_delta[0]):
+        r = np.nan
+    else:
+        r, _p = scipy_stats.pearsonr(real_delta, syn_delta)
+
+    denom = float(np.dot(real_delta, real_delta))
+    slope = np.nan if denom == 0.0 else float(np.dot(real_delta, syn_delta) / denom)
+
+    result = CaseControlDeltaResult(
+        real_delta=real_delta,
+        syn_delta=syn_delta,
+        pearson_r=float(r),
+        slope=float(slope),
+        mean_abs_delta_error=float(np.mean(delta_error)),
+        max_abs_delta_error=float(np.max(delta_error)),
+    )
+
+    if verbose:
+        print(f"  Case-control delta: Pearson r={result.pearson_r:.6f}, "
+              f"slope={result.slope:.6f}, "
+              f"mean_abs_error={result.mean_abs_delta_error:.6f}")
 
     return result
 
@@ -514,170 +619,426 @@ def allele_frequency_comparison(synthetic, real_train, verbose=True):
 # ---------------------------------------------------------------------------
 
 class PrivacyEvaluator:
-    """Orchestrates all privacy metrics with incremental saving.
+    """Orchestrate privacy metrics with split-aware in-place result upgrades."""
 
-    Usage:
-        evaluator = PrivacyEvaluator(distance='hamming', per_class=True)
-        results = evaluator.evaluate(bundle, output_dir, eval_target='synthetic')
-    """
+    METRIC_NAMES = [
+        'imr', 'nndr', 'nnaa', 'dcr', 'mi', 'yelmen_privacy_loss',
+        'nearest_neighbor_chain', 'maf', 'case_control_delta',
+    ]
+    SYNTHETIC_PROTOCOL_VERSION = 'synthetic_privacy_v2_fit_train_yelmen_chains'
+    RECONSTRUCTION_PROTOCOL_VERSION = 'reconstruction_privacy_v1_source_train_val'
+    RECORD_METRIC_PREFIXES = (
+        'imr__', 'nndr__', 'nnaa__', 'dcr__', 'mi__',
+        'yelmen_privacy_loss__', 'nearest_neighbor_chain__',
+    )
 
-    # Ordered list of metrics to run (higher-k metrics first for cache efficiency)
-    METRIC_NAMES = ['imr', 'nndr', 'nnaa', 'dcr', 'mi', 'maf']
-
-    def __init__(self, distance='hamming', per_class=True, device='auto',
-                 nnaa_n_samples=None, verbose=True, cache_knn=True, **knn_kwargs):
-        """
-        Args:
-            distance: 'hamming' or 'manhattan'.
-            per_class: If True, also compute metrics per label class.
-            device: 'auto', 'gpu', or 'cpu'.
-            nnaa_n_samples: Number of samples for NNAA (None=auto).
-            verbose: Print progress.
-            cache_knn: If True, cache kNN results and reuse across metrics.
-            **knn_kwargs: Extra args passed to batched_knn.
-        """
+    def __init__(
+        self,
+        distance='hamming',
+        per_class=True,
+        device='auto',
+        nnaa_n_samples=None,
+        verbose=True,
+        cache_knn=True,
+        yelmen_distance='manhattan',
+        matched_n_samples=50000,
+        run_yelmen=True,
+        yelmen_per_class=False,
+        run_chains=True,
+        chains_per_class=False,
+        chain_min_length=2,
+        chain_max_length=5,
+        chain_neighbor_k=32,
+        seed=42,
+        force_recompute=False,
+        **knn_kwargs,
+    ):
         self.distance = distance
         self.per_class = per_class
         self.device = device
         self.nnaa_n_samples = nnaa_n_samples
         self.verbose = verbose
         self.cache_knn = cache_knn
+        self.yelmen_distance = yelmen_distance
+        self.matched_n_samples = matched_n_samples
+        self.run_yelmen = run_yelmen
+        self.yelmen_per_class = yelmen_per_class
+        self.run_chains = run_chains
+        self.chains_per_class = chains_per_class
+        self.chain_min_length = chain_min_length
+        self.chain_max_length = chain_max_length
+        self.chain_neighbor_k = chain_neighbor_k
+        self.seed = int(seed)
+        self.force_recompute = force_recompute
         self.knn_kwargs = knn_kwargs
 
-    def evaluate(self, bundle, output_dir, eval_target='synthetic'):
-        """Run all privacy metrics with incremental saving.
+    def _synthetic_manifest(self, bundle):
+        def file_identity(path):
+            if not path:
+                return None
+            absolute = os.path.abspath(path)
+            try:
+                stat = os.stat(absolute)
+            except OSError:
+                return {'path': absolute, 'exists': False}
+            return {
+                'path': absolute,
+                'exists': True,
+                'size_bytes': int(stat.st_size),
+                'mtime_ns': int(stat.st_mtime_ns),
+            }
 
-        Args:
-            bundle: PrivacyDataBundle.
-            output_dir: Directory to save results.
-            eval_target: 'synthetic' or 'reconstructed'.
+        return {
+            'protocol_version': self.SYNTHETIC_PROTOCOL_VERSION,
+            'evaluation_target': 'synthetic',
+            'real_training_split': 'train',
+            'real_validation_split': 'val',
+            'real_holdout_split': 'test',
+            'fidelity_reference_split': 'train_val',
+            'dataset_path': bundle.dataset_path,
+            'synthetic_path': bundle.synthetic_path,
+            'dataset_file_identity': file_identity(bundle.dataset_path),
+            'synthetic_file_identity': file_identity(bundle.synthetic_path),
+            'split_seed': int(bundle.split_seed),
+            'evaluation_seed': self.seed,
+            'val_ratio': float(bundle.val_ratio),
+            'test_ratio': float(bundle.test_ratio),
+            'split_sizes': {
+                'train': int(len(bundle.real_train)),
+                'validation': int(len(bundle.real_validation)) if bundle.real_validation is not None else 0,
+                'test': int(len(bundle.real_holdout)),
+                'train_val': int(len(bundle.real_train_val)) if bundle.real_train_val is not None else 0,
+                'synthetic': int(len(bundle.synthetic)),
+            },
+            'standard_distance': self.distance,
+            'nnaa_n_samples': self.nnaa_n_samples,
+            'yelmen': {
+                'enabled': bool(self.run_yelmen),
+                'distance': self.yelmen_distance,
+                'matched_n_samples': self.matched_n_samples,
+                'class_matching': True,
+                'per_class': bool(self.yelmen_per_class),
+                'definition': 'AA_TS_test_minus_AA_TS_train',
+            },
+            'nearest_neighbor_chains': {
+                'enabled': bool(self.run_chains),
+                'distance': 'hamming',
+                'matched_n_samples': self.matched_n_samples,
+                'per_class': bool(self.chains_per_class),
+                'min_length': int(self.chain_min_length),
+                'max_length': int(self.chain_max_length),
+                'neighbor_k': int(self.chain_neighbor_k),
+            },
+            'preserved_legacy_metrics': ['maf__*', 'case_control_delta__*'],
+        }
 
-        Returns:
-            Dict mapping metric keys to result dataclass instances.
-        """
+    @staticmethod
+    def _same_manifest_field(previous, current, key):
+        return previous is not None and previous.get(key) == current.get(key)
+
+    def _prepare_synthetic_results(self, bundle, output_dir):
+        """Drop stale record metrics while preserving train-val fidelity results."""
         results = load_privacy_results(output_dir)
+        previous = load_privacy_manifest(output_dir)
+        current = self._synthetic_manifest(bundle)
+        core_fields = (
+            'protocol_version', 'evaluation_target', 'dataset_path', 'synthetic_path',
+            'dataset_file_identity', 'synthetic_file_identity',
+            'split_seed', 'val_ratio', 'test_ratio', 'split_sizes',
+            'standard_distance', 'nnaa_n_samples',
+            'evaluation_seed',
+        )
+        core_matches = all(
+            self._same_manifest_field(previous, current, key) for key in core_fields
+        )
+        removed = []
+        if self.force_recompute or not core_matches:
+            for key in list(results):
+                if key.startswith(self.RECORD_METRIC_PREFIXES):
+                    removed.append(key)
+                    del results[key]
+        else:
+            if previous.get('yelmen') != current['yelmen']:
+                for key in list(results):
+                    if key.startswith('yelmen_privacy_loss__'):
+                        removed.append(key)
+                        del results[key]
+            if previous.get('nearest_neighbor_chains') != current['nearest_neighbor_chains']:
+                for key in list(results):
+                    if key.startswith('nearest_neighbor_chain__'):
+                        removed.append(key)
+                        del results[key]
 
-        # Select the target data
+        if removed and self.verbose:
+            print(
+                'Protocol upgrade: removed stale split-dependent metrics in place: '
+                + ', '.join(sorted(removed))
+            )
+        # Persist pruning immediately: a later failure cannot leave stale metrics.
+        save_privacy_results(results, output_dir)
+        save_privacy_manifest(current, output_dir)
+        return results, current
+
+    def evaluate(self, bundle, output_dir, eval_target='synthetic'):
         if eval_target == 'synthetic':
             target_data = bundle.synthetic
             target_labels = bundle.labels_syn
+            privacy_train = bundle.real_train
+            privacy_train_labels = bundle.labels_train
+            fidelity_reference = (
+                bundle.real_train_val if bundle.real_train_val is not None else bundle.real_train
+            )
+            fidelity_labels = (
+                bundle.labels_train_val if bundle.labels_train_val is not None else bundle.labels_train
+            )
+            results, manifest = self._prepare_synthetic_results(bundle, output_dir)
+            enable_yelmen = self.run_yelmen
+            enable_chains = self.run_chains
         elif eval_target == 'reconstructed':
             if bundle.reconstructed is None:
-                raise ValueError("No reconstructed data in bundle")
+                raise ValueError('No reconstructed data in bundle')
             target_data = bundle.reconstructed
             target_labels = bundle.labels_recon
+            # Reconstruction targets derive from train+validation subjects.
+            privacy_train = (
+                bundle.real_train_val if bundle.real_train_val is not None else bundle.real_train
+            )
+            privacy_train_labels = (
+                bundle.labels_train_val if bundle.labels_train_val is not None else bundle.labels_train
+            )
+            fidelity_reference = privacy_train
+            fidelity_labels = privacy_train_labels
+            results = load_privacy_results(output_dir)
+            manifest = {
+                'protocol_version': self.RECONSTRUCTION_PROTOCOL_VERSION,
+                'evaluation_target': 'reconstructed',
+                'source_reference_split': 'train_val',
+                'real_holdout_split': 'test',
+                'dataset_path': bundle.dataset_path,
+                'split_seed': int(bundle.split_seed),
+            }
+            save_privacy_manifest(manifest, output_dir)
+            enable_yelmen = False
+            enable_chains = False
         else:
-            raise ValueError(f"Unknown eval_target: {eval_target}")
+            raise ValueError(f'Unknown eval_target: {eval_target}')
 
         if self.verbose:
-            print(f"\n{'='*60}")
-            print(f" Privacy Evaluation: {bundle.model_name} ({eval_target})")
-            print(f" Distance: {self.distance}")
-            print(f" Target: {target_data.shape}, Train: {bundle.real_train.shape}, "
-                  f"Holdout: {bundle.real_holdout.shape}")
-            print(f"{'='*60}\n")
+            print(f"\n{'=' * 60}")
+            print(f' Privacy Evaluation: {bundle.model_name} ({eval_target})')
+            print(f' Distance: {self.distance}')
+            print(
+                f' Target: {target_data.shape}, Train reference: {privacy_train.shape}, '
+                f'Holdout: {bundle.real_holdout.shape}'
+            )
+            print(f"{'=' * 60}\n")
 
-        # Run overall metrics
         self._run_metrics(
-            results, output_dir,
-            target_data, bundle.real_train, bundle.real_holdout,
-            suffix='overall'
+            results,
+            output_dir,
+            target_data,
+            privacy_train,
+            bundle.real_holdout,
+            suffix='overall',
+            target_labels=target_labels,
+            real_train_labels=privacy_train_labels,
+            real_holdout_labels=bundle.labels_holdout,
+            fidelity_reference=fidelity_reference,
+            fidelity_labels=fidelity_labels,
+            enable_yelmen=enable_yelmen,
+            enable_chains=enable_chains,
         )
 
-        # Run per-class metrics
         if self.per_class and target_labels is not None:
-            unique_labels = np.unique(bundle.labels_train)
-            for label_val in unique_labels:
-                suffix = f'class_{int(label_val)}'
-                train_sub = subsample_by_label(bundle.real_train, bundle.labels_train, label_val)
-                holdout_sub = subsample_by_label(bundle.real_holdout, bundle.labels_holdout, label_val)
-                target_sub = subsample_by_label(target_data, target_labels, label_val)
-
-                if len(train_sub) == 0 or len(holdout_sub) == 0 or len(target_sub) == 0:
+            for label_value in np.unique(privacy_train_labels):
+                suffix = f'class_{int(label_value)}'
+                train_sub = subsample_by_label(privacy_train, privacy_train_labels, label_value)
+                holdout_sub = subsample_by_label(
+                    bundle.real_holdout, bundle.labels_holdout, label_value
+                )
+                target_sub = subsample_by_label(target_data, target_labels, label_value)
+                fidelity_sub = subsample_by_label(
+                    fidelity_reference, fidelity_labels, label_value
+                )
+                if min(len(train_sub), len(holdout_sub), len(target_sub)) == 0:
                     if self.verbose:
-                        print(f"\n  Skipping class {label_val}: insufficient samples")
+                        print(f'\n  Skipping class {label_value}: insufficient samples')
                     continue
-
                 if self.verbose:
-                    print(f"\n--- Per-class: label={label_val} ---")
-                    print(f"  Train: {train_sub.shape}, Holdout: {holdout_sub.shape}, "
-                          f"Target: {target_sub.shape}")
-
+                    print(f'\n--- Per-class: label={label_value} ---')
+                    print(
+                        f'  Train: {train_sub.shape}, Holdout: {holdout_sub.shape}, '
+                        f'Target: {target_sub.shape}'
+                    )
                 self._run_metrics(
-                    results, output_dir,
-                    target_sub, train_sub, holdout_sub,
-                    suffix=suffix
+                    results,
+                    output_dir,
+                    target_sub,
+                    train_sub,
+                    holdout_sub,
+                    suffix=suffix,
+                    fidelity_reference=fidelity_sub,
+                    enable_yelmen=enable_yelmen and self.yelmen_per_class,
+                    enable_chains=enable_chains and self.chains_per_class,
                 )
 
+        manifest['completed_metric_keys'] = sorted(results)
+        save_privacy_manifest(manifest, output_dir)
         return results
 
-    def _run_metrics(self, results, output_dir, target, real_train, real_holdout, suffix):
-        """Run all metrics for a given data subset."""
+    def _run_metrics(
+        self,
+        results,
+        output_dir,
+        target,
+        real_train,
+        real_holdout,
+        suffix,
+        target_labels=None,
+        real_train_labels=None,
+        real_holdout_labels=None,
+        fidelity_reference=None,
+        fidelity_labels=None,
+        enable_yelmen=False,
+        enable_chains=False,
+    ):
         cache = KNNCache(enabled=self.cache_knn)
-        kw = dict(metric=self.distance, device=self.device, verbose=self.verbose,
-                  knn_fn=cache, **self.knn_kwargs)
+        kw = dict(
+            metric=self.distance,
+            device=self.device,
+            verbose=self.verbose,
+            knn_fn=cache,
+            **self.knn_kwargs,
+        )
+        fidelity_reference = real_train if fidelity_reference is None else fidelity_reference
+        fidelity_labels = real_train_labels if fidelity_labels is None else fidelity_labels
 
-        # 1. IMR (no kNN)
         key = f'imr__{suffix}'
         if key not in results:
             if self.verbose:
-                print(f"\n[{suffix}] Computing Identical Match Rate...")
+                print(f'\n[{suffix}] Computing Identical Match Rate...')
             results[key] = identical_match_rate(target, real_train, verbose=self.verbose)
             save_privacy_results(results, output_dir)
         elif self.verbose:
-            print(f"\n[{suffix}] Skipping IMR (already computed)")
+            print(f'\n[{suffix}] Skipping IMR (already computed)')
 
-        # 2. NNDR (k=2 — populates cache for later k=1 metrics)
         key = f'nndr__{suffix}'
         if key not in results:
             if self.verbose:
-                print(f"\n[{suffix}] Computing NNDR...")
+                print(f'\n[{suffix}] Computing NNDR...')
             results[key] = nndr_analysis(target, real_train, **kw)
             save_privacy_results(results, output_dir)
         elif self.verbose:
-            print(f"\n[{suffix}] Skipping NNDR (already computed)")
+            print(f'\n[{suffix}] Skipping NNDR (already computed)')
 
-        # 3. NNAA (k=1 and k=2)
         key = f'nnaa__{suffix}'
         if key not in results:
             if self.verbose:
-                print(f"\n[{suffix}] Computing NNAA...")
-            results[key] = nnaa(target, real_train, n_samples=self.nnaa_n_samples, **kw)
+                print(f'\n[{suffix}] Computing NNAA...')
+            results[key] = nnaa(
+                target, real_train, n_samples=self.nnaa_n_samples, seed=self.seed, **kw
+            )
             save_privacy_results(results, output_dir)
         elif self.verbose:
-            print(f"\n[{suffix}] Skipping NNAA (already computed)")
+            print(f'\n[{suffix}] Skipping NNAA (already computed)')
 
-        # 4. DCR (k=1 — may hit cache from NNDR's k=2)
         key = f'dcr__{suffix}'
         if key not in results:
             if self.verbose:
-                print(f"\n[{suffix}] Computing Distance to Closest Record...")
+                print(f'\n[{suffix}] Computing Distance to Closest Record...')
             results[key] = dcr_analysis(target, real_train, real_holdout, **kw)
             save_privacy_results(results, output_dir)
         elif self.verbose:
-            print(f"\n[{suffix}] Skipping DCR (already computed)")
+            print(f'\n[{suffix}] Skipping DCR (already computed)')
 
-        # 5. MI (k=1)
         key = f'mi__{suffix}'
         if key not in results:
             if self.verbose:
-                print(f"\n[{suffix}] Computing Membership Inference...")
-            results[key] = membership_inference_distance(target, real_train, real_holdout, **kw)
+                print(f'\n[{suffix}] Computing Membership Inference...')
+            results[key] = membership_inference_distance(
+                target, real_train, real_holdout, **kw
+            )
             save_privacy_results(results, output_dir)
         elif self.verbose:
-            print(f"\n[{suffix}] Skipping MI (already computed)")
+            print(f'\n[{suffix}] Skipping MI (already computed)')
 
-        # 6. MAF (no kNN)
+        matched = None
+        if enable_yelmen or enable_chains:
+            matched = matched_privacy_cohorts(
+                real_train,
+                real_holdout,
+                target,
+                labels_train=real_train_labels,
+                labels_test=real_holdout_labels,
+                labels_synthetic=target_labels,
+                max_samples=self.matched_n_samples,
+                seed=self.seed,
+            )
+
+        key = f'yelmen_privacy_loss__{suffix}'
+        if enable_yelmen and key not in results:
+            if self.verbose:
+                print(f'\n[{suffix}] Computing Yelmen-compatible AA_TS privacy loss...')
+            results[key] = yelmen_privacy_loss(
+                matched,
+                metric=self.yelmen_distance,
+                device=self.device,
+                verbose=self.verbose,
+                **self.knn_kwargs,
+            )
+            save_privacy_results(results, output_dir)
+        elif enable_yelmen and self.verbose:
+            print(f'\n[{suffix}] Skipping Yelmen privacy loss (already computed)')
+
+        key = f'nearest_neighbor_chain__{suffix}'
+        if enable_chains and key not in results:
+            if self.verbose:
+                print(f'\n[{suffix}] Computing nearest-neighbour chains...')
+            results[key] = nearest_neighbor_chain_analysis(
+                matched.train,
+                matched.synthetic,
+                min_length=self.chain_min_length,
+                max_length=self.chain_max_length,
+                metric='hamming',
+                neighbor_k=self.chain_neighbor_k,
+                device=self.device,
+                verbose=self.verbose,
+                **self.knn_kwargs,
+            )
+            save_privacy_results(results, output_dir)
+        elif enable_chains and self.verbose:
+            print(f'\n[{suffix}] Skipping nearest-neighbour chains (already computed)')
+
         key = f'maf__{suffix}'
         if key not in results:
             if self.verbose:
-                print(f"\n[{suffix}] Computing MAF Drift...")
-            results[key] = allele_frequency_comparison(target, real_train, verbose=self.verbose)
+                print(f'\n[{suffix}] Computing MAF Drift...')
+            results[key] = allele_frequency_comparison(
+                target, fidelity_reference, verbose=self.verbose
+            )
             save_privacy_results(results, output_dir)
         elif self.verbose:
-            print(f"\n[{suffix}] Skipping MAF (already computed)")
+            print(f'\n[{suffix}] Skipping MAF (already computed)')
+
+        key = f'case_control_delta__{suffix}'
+        if target_labels is not None and fidelity_labels is not None:
+            if key not in results:
+                if self.verbose:
+                    print(f'\n[{suffix}] Computing Case-Control Delta...')
+                results[key] = case_control_delta_comparison(
+                    target,
+                    target_labels,
+                    fidelity_reference,
+                    fidelity_labels,
+                    verbose=self.verbose,
+                )
+                save_privacy_results(results, output_dir)
+            elif self.verbose:
+                print(f'\n[{suffix}] Skipping Case-Control Delta (already computed)')
 
         if self.verbose and self.cache_knn:
-            s = cache.stats
-            print(f"\n[{suffix}] kNN cache: {s['hits']} hits, "
-                  f"{s['misses']} misses, {s['upgrades']} upgrades")
+            stats = cache.stats
+            print(
+                f"\n[{suffix}] kNN cache: {stats['hits']} hits, "
+                f"{stats['misses']} misses, {stats['upgrades']} upgrades"
+            )

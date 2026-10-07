@@ -30,6 +30,17 @@ from .metrics import (
     MIResult,
     NNDRResult,
     MAFResult,
+    CaseControlDeltaResult,
+)
+
+from .yelmen import (
+    MatchedPrivacyCohorts,
+    YelmenPrivacyLossResult,
+    NearestNeighborChainResult,
+    matched_privacy_cohorts,
+    adversarial_accuracy,
+    yelmen_privacy_loss,
+    nearest_neighbor_chain_analysis,
 )
 
 # Data loading and persistence
@@ -39,6 +50,8 @@ from .utils import (
     load_privacy_data_manual,
     save_privacy_results,
     load_privacy_results,
+    save_privacy_manifest,
+    load_privacy_manifest,
     subsample_by_label,
     subsample_balanced,
 )
@@ -79,12 +92,18 @@ __all__ = [
     "MIResult",
     "NNDRResult",
     "MAFResult",
+    "CaseControlDeltaResult",
+    "MatchedPrivacyCohorts",
+    "YelmenPrivacyLossResult",
+    "NearestNeighborChainResult",
     # Data
     "PrivacyDataBundle",
     "load_privacy_data_from_checkpoint",
     "load_privacy_data_manual",
     "save_privacy_results",
     "load_privacy_results",
+    "save_privacy_manifest",
+    "load_privacy_manifest",
     "subsample_by_label",
     "subsample_balanced",
     # Distances
@@ -92,6 +111,10 @@ __all__ = [
     "auto_batch_size",
     "onehot_encode_snps",
     "KNNCache",
+    "matched_privacy_cohorts",
+    "adversarial_accuracy",
+    "yelmen_privacy_loss",
+    "nearest_neighbor_chain_analysis",
     # Visualization
     "plot_dcr_distributions",
     "plot_nnaa_summary",

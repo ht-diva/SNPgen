@@ -34,8 +34,11 @@ class PrivacyDataBundle:
     """Container for all data needed by privacy metrics.
 
     Attributes:
-        real_train: (N_train, N_snps) int8, SNP values {0,1,2}.
-        real_holdout: (N_holdout, N_snps) int8.
+        real_train: Gradient-training split, shape (N_train, N_snps).
+        real_holdout: Untouched test split, shape (N_holdout, N_snps).
+        real_validation: Validation/model-selection split.
+        real_train_val: Training plus validation, retained as the fidelity
+            reference and reconstruction source cohort.
         synthetic: (N_syn, N_snps) int8.
         reconstructed: Optional (N_recon, N_snps) int8.
         labels_train: (N_train,) labels (binary or multiclass int).
@@ -61,6 +64,15 @@ class PrivacyDataBundle:
     ddpm_checkpoint_dir: str = ""
     vae_checkpoint_dir: str = ""
     conditioning_type: Optional[str] = None
+    real_validation: Optional[np.ndarray] = None
+    real_train_val: Optional[np.ndarray] = None
+    labels_validation: Optional[np.ndarray] = None
+    labels_train_val: Optional[np.ndarray] = None
+    dataset_path: str = ""
+    split_seed: int = 42
+    val_ratio: float = 0.2
+    test_ratio: float = 0.1
+    synthetic_path: str = ""
 
     def __post_init__(self):
         if self.n_snps == 0 and self.real_train is not None:
@@ -70,7 +82,9 @@ class PrivacyDataBundle:
         """Print a summary table of the data bundle."""
         rows = [
             ("real_train", self.real_train.shape, _label_dist(self.labels_train)),
-            ("real_holdout", self.real_holdout.shape, _label_dist(self.labels_holdout)),
+            ("real_validation", _shape(self.real_validation), _label_dist(self.labels_validation)),
+            ("real_test", self.real_holdout.shape, _label_dist(self.labels_holdout)),
+            ("real_train_val", _shape(self.real_train_val), _label_dist(self.labels_train_val)),
             ("synthetic", self.synthetic.shape, _label_dist(self.labels_syn)),
         ]
         if self.reconstructed is not None:
@@ -101,6 +115,41 @@ def _label_dist(labels):
     return " | ".join(parts)
 
 
+def _shape(data):
+    return data.shape if data is not None else "N/A"
+
+
+def _real_privacy_splits(raw_dataset, holdout_split='test'):
+    """Return explicit fitting, validation, holdout and fidelity splits."""
+    if holdout_split != 'test':
+        raise ValueError(
+            "The corrected synthetic-privacy protocol requires holdout_split='test'; "
+            "validation is reserved for model selection."
+        )
+    real_train, labels_train = raw_dataset.get_split('train', metadata=False)
+    real_validation, labels_validation = raw_dataset.get_split('val', metadata=False)
+    real_holdout, labels_holdout = raw_dataset.get_split(holdout_split, metadata=False)
+    real_train_val, labels_train_val = raw_dataset.get_split('train_val', metadata=False)
+
+    arrays = (real_train, real_validation, real_holdout, real_train_val)
+    arrays = tuple(np.asarray(value, dtype=np.int8) for value in arrays)
+    labels = tuple(
+        np.asarray(value).reshape(-1)
+        for value in (labels_train, labels_validation, labels_holdout, labels_train_val)
+    )
+    n_features = {value.shape[1] for value in arrays}
+    if len(n_features) != 1:
+        raise ValueError(f"Real privacy splits have inconsistent feature counts: {sorted(n_features)}")
+    for name, data, target in zip(
+        ('train', 'validation', holdout_split, 'train_val'), arrays, labels
+    ):
+        if len(data) != len(target):
+            raise ValueError(f"Real {name} genotypes/labels have different lengths")
+    if len(real_train_val) != len(real_train) + len(real_validation):
+        raise ValueError("train_val is not the union size of train and validation")
+    return (*arrays, *labels)
+
+
 # ---------------------------------------------------------------------------
 # Data Loading
 # ---------------------------------------------------------------------------
@@ -108,7 +157,7 @@ def _label_dist(labels):
 def load_privacy_data_from_checkpoint(
     ddpm_checkpoint_dir,
     model_name="",
-    train_split='train_val',
+    train_split='train',
     holdout_split='test',
     syn_filename='syn_complete_dataset.hdf5',
     recon_filename='vae_reconstruction_dataset_train_val.hdf5',
@@ -123,8 +172,10 @@ def load_privacy_data_from_checkpoint(
     Args:
         ddpm_checkpoint_dir: Path to DDPM checkpoint with config.yaml.
         model_name: Name for this model/trait.
-        train_split: Which split to use as training data ('train_val' by default).
-        holdout_split: Which split to use as holdout ('test' or 'val').
+        train_split: Must be ``train`` for membership evaluation. The argument
+            remains for backward-compatible call sites and rejects legacy
+            ``train_val`` use rather than silently contaminating membership.
+        holdout_split: Must be ``test`` for the corrected privacy protocol.
         syn_filename: Name of synthetic data HDF5 file in checkpoint dir.
         recon_filename: Name of reconstruction HDF5 in VAE checkpoint dir.
         verbose: Print loading info.
@@ -164,21 +215,21 @@ def load_privacy_data_from_checkpoint(
         verbose=verbose,
     )
 
-    # Get train_val and holdout splits
-    real_train, labels_train = raw_dataset.get_split(train_split, metadata=False)
-    real_holdout, labels_holdout = raw_dataset.get_split(holdout_split, metadata=False)
-
-    # Ensure int8 for memory efficiency
-    if np.issubdtype(real_train.dtype, np.floating):
-        print(
-            f"⚠️ Warning: Real data loaded with float dtype {real_train.dtype}. "
-            f"Converting to int8, which may cause issues if data is not already in {{0,1,2}} format."
+    if train_split != 'train':
+        raise ValueError(
+            "Membership evaluation requires train_split='train'; validation is "
+            "loaded separately and must not be mixed with fitting members."
         )
-    real_train = np.asarray(real_train, dtype=np.int8)
-    real_holdout = np.asarray(real_holdout, dtype=np.int8)
+    (
+        real_train, real_validation, real_holdout, real_train_val,
+        labels_train, labels_validation, labels_holdout, labels_train_val,
+    ) = _real_privacy_splits(raw_dataset, holdout_split=holdout_split)
 
     if verbose:
-        print(f"  real_train: {real_train.shape}, real_holdout: {real_holdout.shape}")
+        print(
+            f"  real_train: {real_train.shape}, real_validation: {real_validation.shape}, "
+            f"real_{holdout_split}: {real_holdout.shape}, real_train_val: {real_train_val.shape}"
+        )
 
     # Load synthetic data
     syn_path = os.path.join(ddpm_checkpoint_dir, syn_filename)
@@ -219,6 +270,15 @@ def load_privacy_data_from_checkpoint(
         ddpm_checkpoint_dir=ddpm_checkpoint_dir,
         vae_checkpoint_dir=vae_checkpoint_dir or "",
         conditioning_type=conditioning_type,
+        real_validation=real_validation,
+        real_train_val=real_train_val,
+        labels_validation=labels_validation,
+        labels_train_val=labels_train_val,
+        dataset_path=str(h5_path),
+        split_seed=int(seed),
+        val_ratio=float(config.data.raw_dataset.get('params', {}).get('val_ratio', 0.2)),
+        test_ratio=float(config.data.raw_dataset.get('params', {}).get('test_ratio', 0.1)),
+        synthetic_path=syn_path,
     )
 
 
@@ -248,7 +308,7 @@ def load_privacy_data_manual(
         seed: Random seed for splitting.
         val_ratio: Validation ratio for split.
         test_ratio: Test ratio for split.
-        holdout_split: Which split to use as holdout.
+        holdout_split: Must be ``test`` for the corrected privacy protocol.
         syn_filename: Synthetic data filename.
         recon_filename: Reconstruction data filename.
         conditioning_type: 'classification' or 'multiclass'.
@@ -274,14 +334,16 @@ def load_privacy_data_manual(
         verbose=verbose,
     )
 
-    real_train, labels_train = raw_dataset.get_split('train_val', metadata=False)
-    real_holdout, labels_holdout = raw_dataset.get_split(holdout_split, metadata=False)
-
-    real_train = np.asarray(real_train, dtype=np.int8)
-    real_holdout = np.asarray(real_holdout, dtype=np.int8)
+    (
+        real_train, real_validation, real_holdout, real_train_val,
+        labels_train, labels_validation, labels_holdout, labels_train_val,
+    ) = _real_privacy_splits(raw_dataset, holdout_split=holdout_split)
 
     if verbose:
-        print(f"  real_train: {real_train.shape}, real_holdout: {real_holdout.shape}")
+        print(
+            f"  real_train: {real_train.shape}, real_validation: {real_validation.shape}, "
+            f"real_{holdout_split}: {real_holdout.shape}, real_train_val: {real_train_val.shape}"
+        )
 
     # Load synthetic
     syn_path = os.path.join(ddpm_checkpoint_dir, syn_filename)
@@ -320,6 +382,15 @@ def load_privacy_data_manual(
         ddpm_checkpoint_dir=ddpm_checkpoint_dir,
         vae_checkpoint_dir=vae_checkpoint_dir,
         conditioning_type=conditioning_type,
+        real_validation=real_validation,
+        real_train_val=real_train_val,
+        labels_validation=labels_validation,
+        labels_train_val=labels_train_val,
+        dataset_path=str(dataset_path),
+        split_seed=int(seed),
+        val_ratio=float(val_ratio),
+        test_ratio=float(test_ratio),
+        synthetic_path=syn_path,
     )
 
 
@@ -390,6 +461,7 @@ def _extract_vae_dir(config):
 
 RESULTS_FILENAME = 'privacy_results.pkl'
 SUMMARY_FILENAME = 'privacy_summary.json'
+MANIFEST_FILENAME = 'privacy_manifest.json'
 
 
 def save_privacy_results(results, output_dir):
@@ -403,8 +475,10 @@ def save_privacy_results(results, output_dir):
 
     # Save full pickle
     pkl_path = os.path.join(output_dir, RESULTS_FILENAME)
-    with open(pkl_path, 'wb') as f:
+    pkl_tmp = pkl_path + '.tmp'
+    with open(pkl_tmp, 'wb') as f:
         pickle.dump(results, f, protocol=pickle.HIGHEST_PROTOCOL)
+    os.replace(pkl_tmp, pkl_path)
 
     # Save JSON summary (scalars only)
     summary = {}
@@ -417,8 +491,10 @@ def save_privacy_results(results, output_dir):
             summary[key] = str(result)
 
     json_path = os.path.join(output_dir, SUMMARY_FILENAME)
-    with open(json_path, 'w') as f:
+    json_tmp = json_path + '.tmp'
+    with open(json_tmp, 'w') as f:
         json.dump(summary, f, indent=2, default=_to_json_safe)
+    os.replace(json_tmp, json_path)
 
 
 def load_privacy_results(output_dir):
@@ -435,6 +511,24 @@ def load_privacy_results(output_dir):
         with open(pkl_path, 'rb') as f:
             return pickle.load(f)
     return {}
+
+
+def save_privacy_manifest(manifest, output_dir):
+    """Atomically write the protocol manifest accompanying privacy results."""
+    os.makedirs(output_dir, exist_ok=True)
+    path = os.path.join(output_dir, MANIFEST_FILENAME)
+    tmp_path = path + '.tmp'
+    with open(tmp_path, 'w') as handle:
+        json.dump(manifest, handle, indent=2, default=_to_json_safe, sort_keys=True)
+    os.replace(tmp_path, path)
+
+
+def load_privacy_manifest(output_dir):
+    path = os.path.join(output_dir, MANIFEST_FILENAME)
+    if not os.path.exists(path):
+        return None
+    with open(path) as handle:
+        return json.load(handle)
 
 
 def _to_json_safe(obj):
