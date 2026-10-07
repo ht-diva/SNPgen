@@ -1,12 +1,34 @@
 ## Custom ##
 *.log
 *.sbatch
+!ablation/slurm/*.sbatch
 checkpoints
 wandb
 slurm_logs
 .vscode
 catboost_info
 .claude
+.codex
+tmp/
+.DS_Store
+# Local backup and experiment provenance (not required by a fresh checkout).
+ablation_BACKUP/
+ablation/configs/*.tsv
+!ablation/configs/*.example.tsv
+ablation/configs/ddpm_runs.example.tsv
+ablation/configs/reselection_runs.example.tsv
+ablation/configs/traits.local.yaml
+ablation/archive_test_selected_outputs.py
+ablation/evaluation/check_privacy_reaudit.py
+ablation/baselines/hapnest_adapter.py
+ablation/baselines/latent_gaussian.py
+ablation/slurm/submit_ablation_reselection.sh
+ablation/slurm/resolve_checkpoint_dir.py
+ablation/slurm/submit_privacy_reaudit.sh
+ablation/slurm/privacy_reaudit.sbatch
+# DDPM CLI migration will be published separately with the root Python scripts.
+ablation/slurm/generate_ddpm.sbatch
+ablation/slurm/submit_ddpm_evaluation.sh
 
 ############
 

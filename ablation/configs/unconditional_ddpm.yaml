@@ -1,0 +1,22 @@
+# Merge this over the matching SNPgen DDPM config to train a true unconditional
+# latent diffusion baseline on the same VAE latents and SNP panel.
+
+model:
+  params:
+    network_config:
+      params:
+        context_dim:
+        num_classes:
+        adm_in_channels:
+    conditioner_config:
+      target: snpgen.models.modules.embedding.embedders.GeneralConditioner
+      params:
+        emb_models: []
+    sampler_config:
+      target: snpgen.models.modules.ddpm.sampler.EulerEDMSampler
+      params:
+        num_steps: 50
+        discretizer_config:
+          target: snpgen.models.modules.ddpm.discretizer.LegacyDDPMDiscretization
+        guider_config:
+          target: snpgen.models.modules.ddpm.guiders.IdentityGuider

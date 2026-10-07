@@ -1,0 +1,15 @@
+# From-scratch cVAE variant for the 1024-SNP breast panel.
+# Merge after conditional_vae.yaml; this uses no saved author checkpoint.
+
+seq_len: 1024
+
+model:
+  params:
+    loss_config:
+      params:
+        kl_weight: 0.1
+    autoencoder_config:
+      params:
+        encoder_config:
+          params:
+            z_channels: 4

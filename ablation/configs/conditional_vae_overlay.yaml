@@ -1,0 +1,51 @@
+# Overlay for turning a saved SNPgen VAE config into the cVAE-only ablation.
+#
+# Usage:
+#   python -m ablation.run_train \
+#     --config /path/to/vae/config.yaml ablation/configs/conditional_vae_overlay.yaml \
+#     --trait coronary --traits-config ablation/configs/traits.yaml
+#
+# The encoder_config, decoder_config, loss_config, optimizer_config, and
+# discriminator_config are inherited from the saved VAE run.  Only the training
+# wrapper and autoencoder target are swapped to conditional variants.
+
+n_classes: 2
+
+model:
+  target: ablation.models.conditional_vae.ConditionalAutoencoderDiscriminatorTrainingWrapper
+  params:
+    autoencoder_config:
+      target: ablation.models.conditional_vae.ConditionalAutoencoder
+      params:
+        n_classes: ${n_classes}
+        input_ch: ${model.params.autoencoder_config.params.encoder_config.params.input_ch}
+        z_channels: ${model.params.autoencoder_config.params.encoder_config.params.z_channels}
+        z_dim: ${model.params.autoencoder_config.params.decoder_config.params.z_dim}
+        condition_encoder: true
+        condition_decoder: true
+    convert_to_onehot: true
+    channel_first: true
+
+training:
+  max_epochs: 400
+  mixed_precision: true
+  monitor: val/metrics/recons/accuracy
+  monitor_mode: max
+  checkpoint_periodic_filename: "epoch={epoch}-step={step}"
+  checkpoint_best_filename: "best-epoch={epoch}-step={step}-val_recon_acc={val_recon_acc:.4f}"
+  checkpoint_metric_filename_key: val_recon_acc
+  every_n_epochs: 50
+  use_wandb: true
+  wandb_project: SNPgen
+  wandb_group: Ablation
+  enable_progress_bar: true
+  log_every_n_steps: 1
+  scale_lr: true
+  save_last: true
+
+experiment:
+  run_prefix: ablation_cvae
+  ablation_name: conditional_vae
+  base_scratch_dir: ./runs
+  inherit_vae_model_metadata: true
+  use_discriminator: true

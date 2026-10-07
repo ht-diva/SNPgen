@@ -1,0 +1,73 @@
+# Conditional port of the Yelmen et al. multiscale convolutional WGAN-GP.
+
+seed: 42
+seq_len: 2048
+n_classes: 2
+dataset_path: /path/to/your_genotype_dataset.hdf5
+
+model:
+  target: ablation.models.wgan_gp.ConditionalWGAN_GPModule
+  params:
+    seq_len: ${seq_len}
+    n_classes: ${n_classes}
+    channels: 10
+    noise_dim: 2
+    min_latent_size: 4
+    pack_m: 3
+    condition_on_label: true
+    # Preserve the successful legacy class-dependent location and noise
+    # offsets. Use binary_scalar for the minimal new conditioning ablation, or
+    # condition_on_label=false for Yelmen's unconditional model.
+    conditioning_mode: multiscale_offsets
+    # Our 1024/2048-SNP panels are internally extended by the multiscale
+    # architecture. Real tails are zero-padded, so fake tails must be zeroed as
+    # well to prevent the critic from exploiting padding as a shortcut.
+    mask_padded_tail: true
+    generator_lr: 5.0e-4
+    critic_lr: 5.0e-4
+    gradient_penalty_weight: 10.0
+    critic_steps: 10
+
+data:
+  batch_size: 256
+  val_batch_size: 256
+  num_workers: 4
+  raw_dataset:
+    target: snpgen.data.loader.SplitDataset
+    params:
+      file_path: ${dataset_path}
+      val_ratio: 0.2
+      test_ratio: 0.1
+      onehot: true
+      data_dtype: np.float32
+      channel_first: true
+      metadata: false
+      seed: ${seed}
+  dataset:
+    target: snpgen.data.loader.SNPDataset
+    params:
+      seq_len: ${seq_len}
+      as_dict: true
+
+training:
+  max_epochs: 300
+  mixed_precision: false
+  monitor: val/loss
+  monitor_mode: min
+  checkpoint_periodic_filename: "epoch={epoch}-step={step}"
+  checkpoint_best_filename: "best-epoch={epoch}-step={step}-val_loss={val_loss:.4f}"
+  every_n_epochs: 50
+  use_wandb: false
+  wandb_project: SNPgen
+  wandb_group: Ablation
+  enable_progress_bar: true
+  log_every_n_steps: 1
+  save_last: true
+
+experiment:
+  run_prefix: ablation_wgan_gp
+  ablation_name: conditional_wgan_gp
+  proj_name: dataset
+  base_scratch_dir: ./runs
+  inherit_vae_model_metadata: false
+  use_discriminator: false
