@@ -91,7 +91,7 @@ def auto_batch_size(n_query, n_ref, n_features, gpu_mem_gb=None, metric='hamming
 # One-hot encoding for Hamming distance
 # ---------------------------------------------------------------------------
 
-def onehot_encode_snps(data, dtype=torch.float32):
+def onehot_encode_snps(data, dtype=torch.float32, device='cpu', batch_size=None):
     """One-hot encode SNP data {0,1,2} → (N, 3*n_features) for matmul trick.
 
     For each SNP position, maps value v to a 3-element one-hot vector at
@@ -102,16 +102,38 @@ def onehot_encode_snps(data, dtype=torch.float32):
     Args:
         data: np.ndarray of shape (N, n_features) with values in {0, 1, 2}.
         dtype: Torch dtype for the output (default float32 for precision).
+        device: Destination torch device. The default preserves the historical
+            CPU-returning API.
+        batch_size: Optional encoding chunk size. GPU callers should set this
+            to avoid materializing full-cohort int64 intermediates on host RAM.
 
     Returns:
         torch.Tensor of shape (N, 3 * n_features).
     """
-    data_t = torch.from_numpy(np.asarray(data, dtype=np.int64))
-    n_samples, n_features = data_t.shape
-    onehot = torch.zeros(n_samples, n_features * 3, dtype=dtype)
-    # indices[i, j] = j * 3 + data[i, j]  → column to set to 1
-    indices = torch.arange(n_features).unsqueeze(0) * 3 + data_t  # (N, n_features)
-    onehot.scatter_(1, indices, torch.ones_like(indices, dtype=dtype))
+    data = np.asarray(data)
+    if data.ndim != 2:
+        raise ValueError(f"Expected a 2D SNP matrix, got shape {data.shape}")
+    n_samples, n_features = data.shape
+    destination = torch.device(device)
+    if batch_size is None:
+        batch_size = n_samples
+    batch_size = max(1, int(batch_size))
+
+    onehot = torch.zeros(
+        n_samples, n_features * 3, dtype=dtype, device=destination
+    )
+    offsets = torch.arange(n_features, device=destination).unsqueeze(0) * 3
+    for start in range(0, n_samples, batch_size):
+        end = min(start + batch_size, n_samples)
+        # from_numpy is a zero-copy CPU view; transfer and int64 conversion
+        # happen only for this chunk on the destination device.
+        values = torch.from_numpy(np.ascontiguousarray(data[start:end])).to(
+            device=destination
+        )
+        values = values.to(dtype=torch.int64)
+        indices = offsets + values
+        onehot[start:end].scatter_(1, indices, 1.0)
+        del values, indices
     return onehot
 
 
@@ -143,8 +165,12 @@ def _knn_gpu_hamming(query, ref, k=1, batch_size=None, verbose=True):
 
     device = torch.device('cuda')
 
-    # One-hot encode reference and move to GPU
-    ref_onehot = onehot_encode_snps(ref, dtype=torch.float32).to(device)
+    # Encode directly on GPU in small chunks. Encoding the full reference on
+    # CPU first creates multiple multi-GB int64/float32 temporaries and can
+    # exceed the SLURM host-memory allocation for large 2,048-SNP cohorts.
+    ref_onehot = onehot_encode_snps(
+        ref, dtype=torch.float32, device=device, batch_size=8192
+    )
 
     all_distances = np.empty((n_query, k), dtype=np.int32)
     all_indices = np.empty((n_query, k), dtype=np.int64)
@@ -158,8 +184,10 @@ def _knn_gpu_hamming(query, ref, k=1, batch_size=None, verbose=True):
         end = min(start + batch_size, n_query)
         q_batch = query[start:end]
 
-        # One-hot encode query batch
-        q_onehot = onehot_encode_snps(q_batch, dtype=torch.float32).to(device)
+        # One-hot encode the query directly on GPU as well.
+        q_onehot = onehot_encode_snps(
+            q_batch, dtype=torch.float32, device=device, batch_size=8192
+        )
 
         # Agreement = q_onehot @ ref_onehot.T → (batch, n_ref)
         hamming = torch.mm(q_onehot, ref_onehot.t())
