@@ -51,8 +51,8 @@ SNPgen expects data in HDF5 format with the following structure:
 | `labels` | `(N,)` | int | Phenotype labels (e.g., 0=control, 1=case) |
 | `snp_ids` | `(L,)` | string | SNP identifiers (e.g., rs numbers) |
 
-Use the `BED to HDF5.ipynb` notebook to convert PLINK BED files to the required format. The input BED file should already contain LD-clumped SNPs. The notebook handles:
-- Ancestry/ethnicity filtering
+Use `bed_to_hdf5.py` to convert PLINK BED files to the required format. The input BED file should already contain LD-clumped SNPs. The command handles:
+- Optional ancestry filtering using your sample metadata
 - GWAS allele alignment and beta flipping
 - Optional top-K SNP selection by GWAS p-value
 - Saving to HDF5 with SNP metadata (betas, p-values, alleles, chromosomal positions)
@@ -83,71 +83,122 @@ All models are instantiated via `instantiate_from_config()` — class targets an
 
 ## Workflow
 
-The complete pipeline follows these steps:
+Run the commands from the repository root after installing the dependencies.
+Every entry point accepts `--help`; no script requires editing personal paths
+or setting Slurm environment variables. Each root script follows the documented
+pipeline sections and uses the project helpers. Training writes `config.yaml` beside
+its checkpoints. Use explicit checkpoint filenames when moving between stages.
+The [CLI guide](docs/cli.md) explains the input formats, configuration overrides,
+output files and evaluation protocols.
 
-### 1. Data Preparation
-```
-Notebook: BED to HDF5.ipynb
-GPU:      Not required
-```
-Convert PLINK BED genotype files + phenotype data into the HDF5 format. The input BED file should already contain LD-clumped SNPs; the notebook performs ancestry filtering, GWAS allele alignment, and optional top-K SNP selection by p-value.
+### 1. Prepare data
 
-### 2. Train VAE
+```bash
+python bed_to_hdf5.py --bed-prefix /path/to/selected_snps \
+  --phenotype /path/to/phenotypes.csv --gwas /path/to/gwas.tsv \
+  --output /path/to/genotypes.hdf5 --top-k 2048
 ```
-Notebook: Train VAE.ipynb
-Config:   configs/vae/base.yaml + configs/vae/base_disc.yaml + configs/vae/encoder/<size>.yaml
-GPU:      Required
-```
-Train the VAE with adversarial loss. The base config is extended with the discriminator config and an encoder size variant. The best checkpoint is selected by validation reconstruction accuracy.
 
-### 3. Train DDPM
-```
-Notebook: Train DDPM.ipynb
-Config:   configs/ddpm/base.yaml + configs/ddpm/encoder/base.yaml
-GPU:      Required
-```
-Train the latent diffusion model using the frozen VAE encoder. Requires specifying the VAE checkpoint path in the encoder config.
+GWAS column names and ethnicity filters are configurable. The phenotype CSV
+uses the `f.eid,phenotype` format. The command aligns GWAS effects to the encoded
+alleles and saves variant metadata for association and LD analysis. This example
+writes both the full retained panel and `genotypes_top2048.hdf5`; use the latter
+for the 2048-SNP training configuration.
 
-### 4. Generate Synthetic Data
-```
-Notebook: Synthetic Analysis.ipynb
-GPU:      Required
-```
-Generate synthetic genotypes conditioned on phenotype labels. Supports matched sampling (same distribution as training data) and augmented sampling (class-balanced).
+### 2. Train the VAE
 
-### 5. Evaluate Reconstructions
+```bash
+python train_vae.py \
+  --config configs/vae/base.yaml --config configs/vae/encoder/base.yaml \
+  --config configs/vae/encoder/small_emb128.yaml --config configs/vae/base_disc.yaml \
+  --dataset-path /path/to/genotypes_top2048.hdf5 --output-dir /path/to/vae_run \
+  --max-epochs 400 --accelerator gpu --devices 1
 ```
-Notebook: Reconstructions Analysis.ipynb
-GPU:      Required
-```
-Assess VAE reconstruction quality by encoding and decoding the original data.
 
-### 6. Downstream Evaluation
-```
-Notebook: Train Classifier (Cross-Validation).ipynb
-GPU:      Optional (speeds up XGBoost with GPU)
-```
-Train ML classifiers (XGBoost, PRS) on real, synthetic, and augmented data using 5-fold stratified cross-validation.
+The default VAE checkpoint criterion is validation reconstruction accuracy.
+For the breast-cancer panel, select 1024 SNPs during conversion and use that
+selected-panel file with `--set seq_len=1024`,
+`--set model.params.autoencoder_config.params.encoder_config.params.z_channels=4`
+and `--set model.params.loss_config.params.kl_weight=0.1`.
 
-### 7. Privacy Assessment
+### 3. Train the DDPM
+
+```bash
+python train_ddpm.py --vae-checkpoint /path/to/vae_run/best_checkpoint.ckpt \
+  --output-dir /path/to/ddpm_run --max-epochs 1000 --accelerator gpu --devices 1
 ```
-Notebook: Privacy Analysis.ipynb
-GPU:      Optional (speeds up kNN computations)
+
+The DDPM inherits the VAE architecture, dataset and data split from its saved
+configuration. Its checkpoint selection uses validation denoising loss, with
+periodic snapshots also available. W&B logging is optional (`--wandb`); it is
+disabled by default.
+
+### 4. Generate matched and augmented genotypes
+
+```bash
+python generate_ddpm.py --checkpoint /path/to/ddpm_run/best_checkpoint.ckpt \
+  --output-dir /path/to/generated --modes matched augmented --cfg-scale 5
 ```
-Evaluate privacy metrics: Identical Match Rate (IMR), Nearest Neighbor Distance Ratio (NNDR), Distance to Closest Record (DCR), Nearest Neighbor Adversarial Accuracy (NNAA), Membership Inference (MI), and MAF correlation.
+
+Matched sampling retains the reference cohort's phenotype distribution;
+augmented sampling generates a balanced cohort. Guidance scales, sampling steps, device and batch size are configurable.
+Cohort sizes follow the matched and balanced label-sampling definitions. Outputs are saved as
+`syn_complete_dataset.hdf5` and `syn_augmented_dataset.hdf5`. Existing datasets
+require `--overwrite` to replace them or `--skip-existing` to keep them.
+
+### 5. Generate VAE reconstructions
+
+```bash
+python reconstruct_vae.py --checkpoint /path/to/vae_run/best_checkpoint.ckpt \
+  --output-dir /path/to/reconstructions --splits train_val test
+```
+
+Posterior sampling is the default; `--posterior-mean` uses the encoder mean.
+Optional latent and original-data storage supports representation diagnostics.
+The test reconstructions are diagnostic outputs and must not be used to train
+a downstream predictor evaluated on those same real test records.
+
+### 6. Evaluate downstream utility
+
+```bash
+python evaluate_downstream.py --config /path/to/ddpm_run/config.yaml \
+  --complete-path /path/to/generated/syn_complete_dataset.hdf5 \
+  --augmented-path /path/to/generated/syn_augmented_dataset.hdf5 \
+  --synthetic-types complete augmented --output-dir /path/to/utility \
+  --models xgboost xgboost_balanced prs --n-folds 5 --plot
+```
+
+Models fitted on real or generated data are evaluated on an independent real
+test set. Classifier tuning uses only the fitting data. Reconstructed-data
+evaluation is available with an explicit reconstruction path and source split.
+Results are saved as pickles; optional plots include
+fold variation and the external GWAS PRS reference when betas are present.
+
+### 7. Evaluate privacy
+
+```bash
+python evaluate_privacy.py --config /path/to/ddpm_run/config.yaml \
+  --syn-path /path/to/generated/syn_complete_dataset.hdf5 \
+  --output-dir /path/to/privacy --model-name SNPgen
+```
+
+This evaluates IMR, NNDR, DCR, NNAA, membership inference and allele-frequency
+correlation, plus the Yelmen-compatible AA and chain diagnostics. Fitting
+records are members, and the independent real test split is the holdout.
+Class-specific results and diagnostic plots are included; reconstruction
+analysis runs when reconstruction data are available and can be disabled.
 
 ### Additional generators and evaluations
 
-The [comparison and ablation suite](ablation/README.md) provides command-line training, generation and evaluation for an architecture-matched conditional VAE and our phenotype-conditioned CRBM and WGAN-GP adaptations. It also includes association calibration, genotype-structure diagnostics, Yelmen-compatible privacy metrics and label controls. These commands import the `snpgen` package directly and do not require the untracked notebook-to-Python conversions.
+The [comparison and ablation suite](ablation/README.md) provides training,
+checkpoint selection and generation for an architecture-matched conditional
+VAE and our phenotype-conditioned CRBM and WGAN-GP adaptations. It also provides
+association calibration, genotype-structure diagnostics and label controls.
 
-The suite accepts your own genotype data, configurations and output directories; no author checkpoints are required for training the comparison models. Its [Slurm templates](ablation/slurm/) can be configured for your scheduler and Python environment. The original SNPgen training workflow above remains notebook-based for this release.
-
-For the CPU regression tests, install the development dependencies and run:
-
-```bash
-pip install -r requirements-dev.txt
-PYTHONPATH=. python -m pytest ablation/tests -q
-```
+Its [Slurm templates](ablation/slurm/) use configurable scheduler and Python
+settings. `submit_ddpm_evaluation.sh` accepts an explicit run list for DDPM
+generation and subsequent utility/privacy evaluation; `--dry-run` prints the
+commands without submitting jobs.
 
 ## Project Structure
 
@@ -194,7 +245,7 @@ SNPgen/
 │   └── utils/                  # Config loading, genotype utilities
 ├── configs/                    # YAML configuration files
 ├── ablation/                   # Additional generators, evaluation CLI, tests and Slurm templates
-├── *.ipynb                     # Jupyter notebooks (see Workflow above)
+├── *.py                        # Command-line entry points (see Workflow above)
 ├── requirements.txt            # Python dependencies
 ├── LICENSE                     # MIT License
 └── CITATION.cff                # Machine-readable citation

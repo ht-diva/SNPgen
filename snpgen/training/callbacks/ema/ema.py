@@ -368,7 +368,7 @@ class EMACallbackV3(Callback):
     def on_save_checkpoint(self, trainer, pl_module, checkpoint):
         pass
 
-    def on_load_checkpoint(self, callback_state):
+    def on_load_checkpoint(self, trainer, pl_module, checkpoint):
         pass
 
 
@@ -636,7 +636,7 @@ class EMAModelCheckpoint(ModelCheckpoint):
     def _get_ema_callback(self, trainer: "pl.Trainer") -> Optional[EMA]:
         ema_callback = None
         for callback in trainer.callbacks:
-            # TODO: the second condition is a temporary fix needed when we are using Juptyer notebooks with autoreload
+            # Also compare qualified names to handle reloaded callback classes.
             if isinstance(callback, EMA) or (".".join([callback.__module__, callback.__class__.__name__]) == 'snpgen.training.callbacks.ema.EMA'):
                 ema_callback = callback
         return ema_callback

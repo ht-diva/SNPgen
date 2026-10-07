@@ -128,6 +128,6 @@ Save locations:
 ## References
 
 - Yale et al. (2019) — "Privacy preserving synthetic health data" (NNAA metric)
-- Yelmen et al. (2023) — "Deep convolutional and conditional neural networks for large-scale genomic data generation" ([doi:10.1371/journal.pcbi.1011584](https://doi.org/10.1371/journal.pcbi.1011584); AA_TS privacy loss and nearest-neighbour-chain analysis)
+- Yelmen et al. (2023) — "Deep convolutional and conditional neural networks for large-scale genomic data generation" (AA_TS privacy loss and nearest-neighbour-chain analysis)
 - GeneDiffusion — "Generating synthetic genotypes using diffusion models" (adapted NNAA, diversity analysis)
 - SDMetrics / Synthetic Data Vault — DCR, NNDR concepts
